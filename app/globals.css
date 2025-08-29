@@ -1,0 +1,341 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+:root {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Chat container updates */
+.chat-container {
+  overflow-x: visible;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.chat-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-container::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.chat-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.chat-container::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Message content protection */
+.chat-message {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  overflow-x: visible;
+}
+
+.message-content {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.message-content > * {
+  max-width: 100%;
+}
+
+.message-content p,
+.message-content div {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+/* ====== ROOT PROBLEM FIX: TABLE CONTAINER OVERRIDES ====== */
+
+/* Message containers with tables - override default overflow behavior */
+.message-with-tables {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+/* Message content with tables - allow horizontal overflow */
+.message-content.has-table-content {
+  overflow-x: visible !important;
+}
+
+.message-content.has-table-content > * {
+  max-width: none; /* Remove width constraints for table content */
+}
+
+/* ====== ENHANCED TABLE CONTAINER ====== */
+
+.table-scroll-container {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  margin: 1rem 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+  position: relative;
+}
+
+.table-scroll-container table {
+  min-width: 600px;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  background: white;
+  border: none;
+}
+
+.table-scroll-container table th,
+.table-scroll-container table td {
+  padding: 8px 12px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  vertical-align: top;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  min-width: 100px;
+}
+
+/* ====== MISSING STICKY HEADER DEFINITION ====== */
+.table-scroll-container table th,
+.sticky-header {
+  background-color: #f9fafb !important;
+  font-weight: 600 !important;
+  color: #374151 !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 10 !important;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* Remove last column border */
+.table-scroll-container table th:last-child,
+.table-scroll-container table td:last-child {
+  border-right: none;
+}
+
+/* Visual scroll indicators */
+.table-scroll-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+.table-scroll-container::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.table-scroll-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.table-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Hover effect for better UX */
+.table-scroll-container:hover {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+/* ====== ENHANCED RESPONSIVE DESIGN ====== */
+
+/* Special handling for tables in messages */
+.message-content .table-scroll-container {
+  max-width: calc(100vw - 4rem); /* Account for message padding */
+}
+
+/* Small mobile devices */
+@media (max-width: 320px) {
+  .table-scroll-container {
+    margin: 0.5rem -0.75rem;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  
+  .table-scroll-container table {
+    min-width: 400px;
+  }
+  
+  .table-scroll-container table th,
+  .table-scroll-container table td {
+    padding: 4px 6px;
+    font-size: 10px;
+    min-width: 60px;
+  }
+  
+  .message-content .table-scroll-container {
+    max-width: 100vw;
+  }
+}
+
+/* Standard mobile devices */
+@media (max-width: 480px) {
+  .table-scroll-container {
+    margin: 0.5rem -1rem;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  
+  .table-scroll-container table {
+    min-width: 500px;
+  }
+  
+  .table-scroll-container table th,
+  .table-scroll-container table td {
+    padding: 4px 6px;
+    font-size: 11px;
+    min-width: 60px;
+  }
+  
+  .message-content .table-scroll-container {
+    max-width: 100vw;
+  }
+}
+
+/* Tablet and larger mobile */
+@media (max-width: 768px) {
+  .table-scroll-container {
+    margin: 0.5rem -1rem;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  
+  .table-scroll-container table {
+    min-width: 500px;
+  }
+  
+  .table-scroll-container table th,
+  .table-scroll-container table td {
+    padding: 6px 8px;
+    font-size: 12px;
+    min-width: 80px;
+  }
+  
+  .message-content .table-scroll-container {
+    max-width: 100vw;
+  }
+}
+
+/* Desktop - optimal display */
+@media (min-width: 769px) {
+  .message-content .table-scroll-container {
+    max-width: 100%;
+    margin: 1rem 0;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+  }
+  
+  .table-scroll-container table {
+    min-width: 600px;
+  }
+  
+  .table-scroll-container table th,
+  .table-scroll-container table td {
+    padding: 8px 12px;
+    font-size: 14px;
+    min-width: 100px;
+  }
+}
+
+/* Large desktop - wide tables */
+@media (min-width: 1024px) {
+  .message-content .table-scroll-container {
+    max-width: none; /* Allow full width on large screens */
+  }
+  
+  .table-scroll-container table {
+    min-width: 700px;
+  }
+}
+
+/* ====== ACCESSIBILITY & TOUCH IMPROVEMENTS ====== */
+
+/* Better touch scrolling indicators on mobile */
+@media (max-width: 768px) {
+  .table-scroll-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 20px;
+    background: linear-gradient(to left, rgba(255,255,255,0.8) 0%, transparent 100%);
+    pointer-events: none;
+    z-index: 5;
+  }
+  
+  .table-scroll-container::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 20px;
+    background: linear-gradient(to right, rgba(255,255,255,0.8) 0%, transparent 100%);
+    pointer-events: none;
+    z-index: 5;
+  }
+}
+
+/* Focus states for better accessibility */
+.table-scroll-container:focus-within {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .table-scroll-container {
+    border: 2px solid #000;
+  }
+  
+  .table-scroll-container table th,
+  .table-scroll-container table td {
+    border: 1px solid #000;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .table-scroll-container:hover {
+    box-shadow: none;
+    transition: none;
+  }
+}

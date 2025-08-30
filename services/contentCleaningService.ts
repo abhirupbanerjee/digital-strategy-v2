@@ -1,8 +1,7 @@
-// services/contentCleaningService.ts
+// services/contentCleaningService.ts - ENHANCED VERSION
 export class ContentCleaningService {
   /**
-   * Clean content while preserving file links
-   * Extracted from: /app/api/cleanup-threads/route.ts
+   * Clean content while preserving file links - ENHANCED for web search
    */
   static safeCleanWithPlaceholders(text: string): string {
     if (typeof text !== 'string') return text;
@@ -60,39 +59,34 @@ export class ContentCleaningService {
   }
 
   /**
-   * Remove web search artifacts
-   * Extracted from: /app/api/threads/route.ts
+   * Remove web search artifacts - V1 COMPATIBLE VERSION
    */
   static removeSearchArtifacts(content: string): string {
     let cleaned = content;
     
-    // Remove search context blocks
-    cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
-    cleaned = cleaned.replace(/\[Current Web Information[^\]]*\]:\s*/gi, '');
+    // ✅ V1 PATTERNS - Target exact V1 search context format
+    cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT - DO NOT INCLUDE IN RESPONSE\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+    cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
     
-    // Remove web summaries and results
+    // ✅ V1 PATTERNS - Remove web summaries and results as they appeared in V1
     cleaned = cleaned.replace(/Web Summary:\s*[^\n]*\n/gi, '');
-    cleaned = cleaned.replace(/Top Search Results:\s*\n[\s\S]*?Instructions:[^\n]*\n/gi, '');
+    cleaned = cleaned.replace(/Current Web Information:\s*\n[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '');
     
-    // Remove source citations (various formats)
-    cleaned = cleaned.replace(/\【\d+:\d+†source\】/g, '');
-    cleaned = cleaned.replace(/\【\d+†source\】/g, '');
-    cleaned = cleaned.replace(/\[\d+:\d+†source\]/g, '');
-    cleaned = cleaned.replace(/\[\d+†source\]/g, '');
-    
-    // Remove PDF/document references with sources
-    cleaned = cleaned.replace(/\d+\.\s+\[PDF\]\s+[^\n]*\n\s*[^\n]*\.\.\.\s*Source:\s*https?:\/\/[^\s]+\s*/gi, '');
+    // ✅ V1 PATTERNS - Remove numbered source entries (V1 format)
     cleaned = cleaned.replace(/\d+\.\s+[^.]+\.\.\.\s*Source:\s*https?:\/\/[^\s]+\s*/gi, '');
     
-    // Remove search metadata
+    // ✅ V1 PATTERNS - Remove search instructions
+    cleaned = cleaned.replace(/IMPORTANT: Please provide a natural response incorporating relevant information[^\n]*\n?/gi, '');
+    
+    // Keep only essential V2 patterns that don't conflict with V1
+    cleaned = cleaned.replace(/\【\d+†source\】/g, '');
     cleaned = cleaned.replace(/Search performed on:\s*[^\n]*\n/gi, '');
-    cleaned = cleaned.replace(/Query:\s*"[^"]*"\s*/gi, '');
     
     return cleaned;
   }
 
   /**
-   * Remove instructions and metadata
+   * Remove instructions and metadata - ENHANCED
    */
   static removeInstructions(content: string): string {
     let cleaned = content;
@@ -101,6 +95,11 @@ export class ContentCleaningService {
     cleaned = cleaned.replace(/Instructions: Please incorporate[^\n]*\n?/gi, '');
     cleaned = cleaned.replace(/IMPORTANT:\s*Please provide[^\n]*\n?/gi, '');
     cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+    cleaned = cleaned.replace(/Note:\s*\d+\s*files? from previous messages[^\n]*\n?/gi, '');
+    
+    // 🔥 ENHANCED: Remove web search instructions
+    cleaned = cleaned.replace(/You have access to current web search results[^\n]*\n?/gi, '');
+    cleaned = cleaned.replace(/You also have access to current web search results[^\n]*\n?/gi, '');
     
     // Remove JSON formatting instructions
     cleaned = cleaned.replace(/Please format your response as a valid JSON[^\n]*\n?/gi, '');
@@ -110,17 +109,7 @@ export class ContentCleaningService {
   }
 
   /**
-   * Normalize whitespace and formatting
-   */
-  static normalizeWhitespace(text: string): string {
-    return text
-      .replace(/\s+/g, ' ')           // Multiple spaces to single space
-      .replace(/\n\s*\n\s*\n/g, '\n\n') // Multiple newlines to double newline
-      .trim();
-  }
-
-  /**
-   * Normalize overall formatting
+   * Normalize overall formatting - ENHANCED
    */
   static normalizeFormatting(text: string): string {
     let normalized = text;
@@ -130,32 +119,43 @@ export class ContentCleaningService {
     normalized = normalized.replace(/^\s*===\s*$/gm, '');
     normalized = normalized.replace(/^\s*\*\*\*\s*$/gm, '');
     
+    // 🔥 ENHANCED: Clean up empty bullet points from web search removal
+    normalized = normalized.replace(/^\s*•\s*$/gm, '');
+    normalized = normalized.replace(/^\s*\*\s*$/gm, '');
+    normalized = normalized.replace(/^\s*-\s*$/gm, '');
+    
     // Fix excessive newlines
     normalized = normalized.replace(/\n{3,}/g, '\n\n');
     
-    // Trim each line
-    normalized = normalized.split('\n').map(line => line.trim()).join('\n');
+    // 🔥 ENHANCED: Remove orphaned section headers that might be left after cleaning
+    normalized = normalized.replace(/^\s*Middleware Platforms with API Gateway Management\s*$/gm, '');
     
-    return normalized.trim();
+    // Trim each line and remove empty lines at start/end
+    normalized = normalized.split('\n')
+      .map(line => line.trim())
+      .join('\n')
+      .replace(/^\n+/, '')
+      .replace(/\n+$/, '');
+    
+    return normalized;
   }
 
   /**
-   * Clean message content for display
-   * Main entry point for cleaning
+   * Check if content has search artifacts
    */
-  static cleanForDisplay(content: string): string {
-    // Skip cleaning if content has file links to preserve them
-    if (content.includes('/api/files/')) {
-      return this.safeCleanWithPlaceholders(content);
-    }
+  static hasSearchArtifacts(content: string): boolean {
+    const patterns = [
+      /\[INTERNAL SEARCH CONTEXT/i,
+      /\[Current Web Information/i,
+      /Web Summary:/i,
+      /Top Search Results:/i,
+      /\【\d+†source\】/,
+      /Source:\s*https?:\/\//i,
+      /^\s*•\s+[^•\n]*?Summary:\s*[^\n]*$/m,
+      /Based on the current web information/i
+    ];
     
-    // Otherwise do regular cleaning
-    let cleaned = this.removeSearchArtifacts(content);
-    cleaned = this.removeInstructions(cleaned);
-    cleaned = this.normalizeFormatting(cleaned);
-    cleaned = this.normalizeWhitespace(cleaned);
-    
-    return cleaned;
+    return patterns.some(pattern => pattern.test(content));
   }
 
   /**
@@ -188,19 +188,20 @@ export class ContentCleaningService {
   }
 
   /**
-   * Check if content has search artifacts
+   * Clean message content for display
    */
-  static hasSearchArtifacts(content: string): boolean {
-    const patterns = [
-      /\[INTERNAL SEARCH CONTEXT/i,
-      /\[Current Web Information/i,
-      /Web Summary:/i,
-      /Top Search Results:/i,
-      /\【\d+†source\】/,
-      /Source:\s*https?:\/\//i
-    ];
+  static cleanForDisplay(content: string): string {
+    // Skip cleaning if content has file links to preserve them
+    if (content.includes('/api/files/')) {
+      return this.safeCleanWithPlaceholders(content);
+    }
     
-    return patterns.some(pattern => pattern.test(content));
+    // Otherwise do regular cleaning
+    let cleaned = this.removeSearchArtifacts(content);
+    cleaned = this.removeInstructions(cleaned);
+    cleaned = this.normalizeFormatting(cleaned);
+    
+    return cleaned;
   }
 
   /**

@@ -1,5 +1,5 @@
 // services/storageService.ts
-import { put, del, list } from '@vercel/blob';
+import { storageClient } from '@/lib/clients';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -55,12 +55,13 @@ export class StorageService {
       }
 
       // Upload to Vercel Blob
-      const blob = await put(filename, file, {
-        access: 'public',
-        contentType: options?.contentType || 'application/octet-stream',
-        addRandomSuffix: true,
-      });
+      if (!storageClient) {
+        throw new Error('Storage client not configured');
+      }
 
+      const blob = await storageClient.upload(file, filename, {
+        contentType: options?.contentType
+      });
           const isFileCtorAvailable =
       typeof File !== 'undefined' && typeof (File as unknown) === 'function';
 
@@ -178,7 +179,10 @@ export class StorageService {
       for (const file of oldFiles || []) {
         try {
           // Delete from Vercel Blob
-          await del(file.vercel_file_key);
+          if (!storageClient) {
+            throw new Error('Storage client not configured');
+          }
+          await storageClient.delete(file.vercel_file_key);
 
           // Delete from Supabase
           await supabase
@@ -309,7 +313,10 @@ export class StorageService {
       if (mapping) {
         // Delete from Vercel Blob
         if (mapping.vercel_file_key) {
-          await del(mapping.vercel_file_key);
+          if (!storageClient) {
+            throw new Error('Storage client not configured');
+          }
+          await storageClient.delete(mapping.vercel_file_key);
         }
 
         // Delete from Supabase
@@ -398,7 +405,10 @@ export class StorageService {
   static async recalculateStats(): Promise<StorageStats> {
     try {
       // List all blobs from Vercel
-      const blobs = await list();
+      if (!storageClient) {
+        throw new Error('Storage client not configured');
+      }
+      const blobs = await storageClient.list();
       
       // Update Supabase records
       for (const blob of blobs.blobs) {

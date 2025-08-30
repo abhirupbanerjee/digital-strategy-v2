@@ -5,8 +5,12 @@ import { createClient } from '@supabase/supabase-js';
 
 // ✅ NEW SERVICES - Replace content processing and storage logic
 import { ContentCleaningService } from '@/services/contentCleaningService';
-import { StorageService } from '@/services/storageService';
+
+// Optimisations:
+import { openaiClient } from '@/lib/clients';
+import { ApiError, createErrorResponse } from '@/lib/utils/apiErrors';
 import { AIProviderService } from '@/services/aiProviderService';
+import { StorageService } from '@/services/storageService';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -53,12 +57,11 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Thread retrieval error:', error);
-    return NextResponse.json(
-      { error: 'Failed to retrieve thread' },
-      { status: 500 }
-    );
-  }
+  console.error('Error:', error);
+  const errorResponse = createErrorResponse(error);
+  const status = error instanceof ApiError ? error.status : 500;
+  return NextResponse.json(errorResponse, { status });
+}
 }
 
 // POST - Save thread to database
@@ -125,12 +128,11 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Thread save error:', error);
-    return NextResponse.json(
-      { error: 'Failed to save thread' },
-      { status: 500 }
-    );
-  }
+  console.error('Error:', error);
+  const errorResponse = createErrorResponse(error);
+  const status = error instanceof ApiError ? error.status : 500;
+  return NextResponse.json(errorResponse, { status });
+}
 }
 
 // DELETE - Remove thread and associated data
@@ -143,8 +145,14 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Thread ID is required' }, { status: 400 });
     }
 
-    // ✅ OPTIMIZED: Delete from OpenAI using AIProviderService
-    await AIProviderService.deleteThread(threadId);
+    // ✅ MODIFIED: Delete from OpenAI using openaiClient
+    try {
+      await openaiClient.deleteThread(threadId);
+      console.log(`Deleted thread ${threadId} from OpenAI`);
+    } catch (openaiError) {
+      console.error('OpenAI deletion failed:', openaiError);
+      // Continue with database deletion
+    }
 
     // ✅ OPTIMIZED: Delete from database
     const { error: dbError } = await supabase
@@ -178,10 +186,9 @@ export async function DELETE(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Thread deletion error:', error);
-    return NextResponse.json(
-      { error: 'Failed to delete thread' },
-      { status: 500 }
-    );
-  }
+  console.error('Error:', error);
+  const errorResponse = createErrorResponse(error);
+  const status = error instanceof ApiError ? error.status : 500;
+  return NextResponse.json(errorResponse, { status });
+}
 }

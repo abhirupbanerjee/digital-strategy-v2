@@ -1,4 +1,4 @@
-// app/api/chat/route.ts - MODIFIED VERSION
+// app/api/chat/route.ts - FIXED VERSION WITH CORRECT CLIENT METHODS
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { openaiClient, tavilyClient, storageClient } from '@/lib/clients';
@@ -7,9 +7,6 @@ import { ContentCleaningService } from '@/services/contentCleaningService';
 import { ThreadFileService } from '@/services/threadFileService';
 
 const ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID;
-
-// ✅ REMOVED: Direct axios imports and manual fetch calls
-// ✅ REMOVED: Manual retry logic (now handled by httpClient)
 
 // Polling configuration
 const MAX_RETRIES = parseInt(process.env.OPENAI_MAX_RETRIES || '300');
@@ -39,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     let currentThreadId = threadId;
 
-    // ✅ MODIFIED: Create thread using openaiClient
+    // Create thread if needed using OpenAI client's createThread method
     if (!currentThreadId) {
       if (DEBUG) console.log('Creating new thread...');
       try {
@@ -74,7 +71,7 @@ export async function POST(request: NextRequest) {
 
     const allFileIds = [...new Set([...existingThreadFiles, ...newFileIds])];
     
-    // ✅ MODIFIED: Handle web search using tavilyClient
+    // Handle web search using Tavily client
     let searchSources: Array<{title: string, url: string, snippet: string, relevanceScore: number}> = [];
     let webSearchPerformed = false;
     let enhancedMessage = message;
@@ -93,13 +90,14 @@ export async function POST(request: NextRequest) {
         
         if (searchResults.results && searchResults.results.length > 0) {
           webSearchPerformed = true;
-          searchSources = searchResults.results.map((result, index) => ({
+          searchSources = searchResults.results.map((result: any, index: number) => ({
             title: result.title,
             url: result.url,
             snippet: result.content.substring(0, 200),
             relevanceScore: result.score || (index + 1)
           }));
           
+          // Format message with search context
           enhancedMessage = formatSearchEnhancedMessage(message, searchResults, useJsonFormat);
           if (DEBUG) console.log(`✅ Web search completed: ${searchResults.results.length} results found`);
         }
@@ -109,34 +107,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Prepare message for thread
-    const messageContent = webSearchPerformed || useJsonFormat ? enhancedMessage : (originalMessage || message);
+    // Prepare message content
+    const messageContent = webSearchPerformed || useJsonFormat ? 
+      enhancedMessage : (originalMessage || message);
 
-    // ✅ MODIFIED: Add message using openaiClient
+    // Add message to thread using the correct openaiClient method
     try {
-      await openaiClient.addMessage(currentThreadId, messageContent, allFileIds);
+      await openaiClient.addMessage(currentThreadId, messageContent, allFileIds.length > 0 ? allFileIds : undefined);
       if (DEBUG) console.log('Message added to thread successfully');
     } catch (error) {
       console.error('Failed to add message:', error);
       throw new ApiError('Failed to add message to thread', 500, 'MESSAGE_ERROR');
     }
 
-    // Configure and create run
-    const runConfig: any = {
-      tools: [{ type: "code_interpreter" }],
-    };
-
-    if (useJsonFormat) {
-      runConfig.response_format = { type: "json_object" };
-    }
-
-    if (webSearchEnabled && (!allFileIds || allFileIds.length === 0)) {
-      runConfig.tools.push({ type: "file_search" });
-    }
-
-    // ✅ MODIFIED: Create run using openaiClient
+    // Create run using the correct openaiClient method
     let run;
     try {
+      // The createRun method optionally takes assistantId and instructions
       run = await openaiClient.createRun(currentThreadId, ASSISTANT_ID);
       if (DEBUG) console.log('Run created:', run.id);
     } catch (error) {
@@ -144,7 +131,7 @@ export async function POST(request: NextRequest) {
       throw new ApiError('Failed to create run', 500, 'RUN_ERROR');
     }
 
-    // ✅ MODIFIED: Poll for completion using openaiClient's built-in method
+    // Poll for completion using openaiClient's waitForRunCompletion method
     const maxRetries = webSearchEnabled ? WEB_SEARCH_MAX_RETRIES : MAX_RETRIES;
     const pollInterval = webSearchEnabled ? WEB_SEARCH_POLL_INTERVAL : POLL_INTERVAL;
     
@@ -158,7 +145,7 @@ export async function POST(request: NextRequest) {
       );
     } catch (error) {
       console.error('Run polling failed:', error);
-      throw new ApiError('Assistant run timeout or failed', 408, 'RUN_TIMEOUT');
+      throw new ApiError('Assistant run timeout', 408, 'RUN_TIMEOUT');
     }
 
     // Process response
@@ -166,7 +153,7 @@ export async function POST(request: NextRequest) {
     let extractedResponse: any = { type: 'text', content: reply };
 
     if (completedRun.status === 'completed') {
-      // ✅ MODIFIED: Get messages using openaiClient
+      // Get messages from thread using the correct openaiClient method
       const messages = await openaiClient.getMessages(currentThreadId, 1);
       
       if (messages.data && messages.data.length > 0) {
@@ -189,7 +176,7 @@ export async function POST(request: NextRequest) {
     } else if (completedRun.status === 'requires_action') {
       // Handle tool outputs if needed
       if (completedRun.required_action) {
-        // Process required actions
+        // Could implement tool output handling here using openaiClient.submitToolOutputs
         reply = 'Additional action required. Please try again.';
       }
     }
@@ -199,8 +186,11 @@ export async function POST(request: NextRequest) {
       await updateThreadFileTracking(currentThreadId, newFileIds, allFileIds);
     }
 
-    // Clean response content
-    const cleanedReply = ContentCleaningService.cleanForDisplay(reply);
+    // Clean response content with proper web search preservation
+    const cleanedReply = ContentCleaningService.cleanForActiveChat(reply, {
+      preserveWebSearch: webSearchEnabled,
+      preserveFileLinks: true
+    });
 
     return NextResponse.json({
       reply: cleanedReply,
@@ -214,7 +204,6 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Chat API error:', error);
     
-    // ✅ MODIFIED: Use consistent error response
     const errorResponse = createErrorResponse(error);
     const status = error instanceof ApiError ? error.status : 500;
     
@@ -227,14 +216,23 @@ export async function POST(request: NextRequest) {
 function formatSearchEnhancedMessage(message: string, searchResults: any, useJsonFormat: boolean): string {
   let enhancedMessage = message;
   
+  // Add search context wrapper
+  enhancedMessage += '\n\n[INTERNAL SEARCH CONTEXT - DO NOT INCLUDE IN RESPONSE]:';
+  
   if (searchResults.answer) {
-    enhancedMessage = `${message}\n\nWeb Search Context:\n${searchResults.answer}\n\n`;
+    enhancedMessage += `\n\nWeb Search Summary: ${searchResults.answer}`;
   }
   
-  enhancedMessage += 'Sources:\n';
+  enhancedMessage += '\n\nSources:\n';
   searchResults.results.forEach((result: any, index: number) => {
-    enhancedMessage += `${index + 1}. ${result.title}: ${result.content.substring(0, 200)}...\n`;
+    // Include source with arrow symbol for citations
+    enhancedMessage += `${index + 1}. ${result.title}\n`;
+    enhancedMessage += `   ${result.content.substring(0, 200)}...\n`;
+    enhancedMessage += `   Source: ${result.url}↗\n\n`;
   });
+  
+  enhancedMessage += '[END SEARCH CONTEXT]\n\n';
+  enhancedMessage += 'Please provide a natural response incorporating relevant information from the search results above.';
   
   if (useJsonFormat) {
     enhancedMessage += '\n\nPlease format your response as a valid JSON object.';
@@ -251,10 +249,10 @@ async function extractTextFromMessage(message: any): Promise<any> {
       .join('\n');
     
     const files = message.content
-      .filter((item: any) => item.type === 'file')
+      .filter((item: any) => item.type === 'image_file')
       .map((item: any) => ({
-        fileId: item.file?.file_id,
-        description: item.file?.filename || 'Generated file'
+        fileId: item.image_file?.file_id,
+        description: 'Generated file'
       }));
     
     return {
@@ -268,23 +266,21 @@ async function extractTextFromMessage(message: any): Promise<any> {
   }
 }
 
-// ✅ MODIFIED: Use storageClient for file uploads
 async function uploadFileToStorage(fileId: string, description: string, threadId: string) {
   if (!storageClient) return null;
   
   try {
-    // Get file content from OpenAI
+    // Get file content from OpenAI using the correct method
     const fileContent = await openaiClient.getFileContent(fileId);
     const fileBuffer = Buffer.from(fileContent);
     const filename = `${description}-${Date.now()}.docx`;
 
-    // Upload using storageClient
+    // Upload using storage client's upload method
     const result = await storageClient.upload(
       fileBuffer,
       `threads/${threadId}/${filename}`,
       {
-        contentType: 'application/octet-stream',
-        metadata: { threadId, openaiFileId: fileId }
+        contentType: 'application/octet-stream'
       }
     );
 
@@ -296,9 +292,10 @@ async function uploadFileToStorage(fileId: string, description: string, threadId
         vercel_blob_url: result.url,
         vercel_file_key: result.pathname,
         filename: filename,
-        content_type: result.contentType,
-        file_size: result.size,
-        thread_id: threadId
+        content_type: 'application/octet-stream',
+        file_size: fileBuffer.length,
+        thread_id: threadId,
+        created_at: new Date().toISOString()
       });
 
     return result;
@@ -312,14 +309,14 @@ async function updateThreadFileTracking(threadId: string, newFileIds: string[], 
   try {
     for (const fileId of newFileIds) {
       try {
-        // ✅ MODIFIED: Get file metadata using openaiClient
+        // Get file metadata from OpenAI using the correct method
         const metadata = await openaiClient.getFile(fileId);
         
         await ThreadFileService.addFileToThread(
           threadId,
           fileId,
           metadata.filename || `file-${Date.now()}`,
-          metadata.purpose || 'unknown',
+          metadata.purpose || 'assistants',
           metadata.bytes || 0
         );
       } catch (error) {

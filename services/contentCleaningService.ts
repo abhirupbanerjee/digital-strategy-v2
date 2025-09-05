@@ -1,13 +1,59 @@
-// services/contentCleaningService.ts - ENHANCED VERSION
+// services/contentCleaningService.ts - FIXED VERSION
 export class ContentCleaningService {
   /**
-   * Clean content while preserving file links - ENHANCED for web search
+   * Clean content for active chat display with web search preservation
+   * This is the CRITICAL method for preserving web search citations
    */
-  static safeCleanWithPlaceholders(text: string): string {
-    if (typeof text !== 'string') return text;
+  static cleanForActiveChat(content: string, options?: { 
+    preserveWebSearch?: boolean,
+    preserveFileLinks?: boolean 
+  }): string {
+    const { preserveWebSearch = false, preserveFileLinks = true } = options || {};
     
-    console.log('=== CONTENT CLEANING START ===');
-    console.log('Original text length:', text.length);
+    if (typeof content !== 'string') return content;
+    
+    console.log('=== ACTIVE CHAT CLEANING ===');
+    console.log(`Web Search Preservation: ${preserveWebSearch}`);
+    console.log('Original length:', content.length);
+    
+    // Always preserve file links
+    if (preserveFileLinks && content.includes('/api/files/')) {
+      return this.safeCleanWithPlaceholders(content, preserveWebSearch);
+    }
+    
+    // If web search should be preserved, only remove wrapper contexts
+    if (preserveWebSearch) {
+      let cleaned = content;
+      
+      // ONLY remove the internal context wrappers, NOT the citations
+      cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+      cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+      
+      // DO NOT remove Source: lines when preserving web search
+      // DO NOT remove URLs with ↗ symbols
+      // DO NOT remove [PDF] indicators
+      // DO NOT call removeInstructions or removeSearchArtifacts
+      
+      // Only normalize formatting gently
+      cleaned = cleaned.replace(/\n{4,}/g, '\n\n\n'); // Less aggressive newline normalization
+      cleaned = cleaned.trim();
+      
+      return cleaned;
+    }
+    
+    // Regular cleaning when NOT preserving web search
+    let cleaned = this.removeSearchArtifacts(content);
+    cleaned = this.removeInstructions(cleaned);
+    cleaned = this.normalizeFormatting(cleaned);
+    
+    return cleaned;
+  }
+
+  /**
+   * Clean content while preserving file links - Enhanced for web search
+   */
+  static safeCleanWithPlaceholders(text: string, preserveWebSearch: boolean = false): string {
+    if (typeof text !== 'string') return text;
     
     // Step 1: Store file links with placeholders
     const fileLinkRegex = /\[Download .*?\]\(\/api\/files\/[^)]+\)/g;
@@ -18,44 +64,44 @@ export class ContentCleaningService {
     let placeholderIndex = 0;
     let safeText = text;
     
-    // Replace markdown file links with placeholders
+    // Replace file links with placeholders
     safeText = safeText.replace(fileLinkRegex, (match) => {
       const placeholder = `__FILE_PLACEHOLDER_${placeholderIndex++}__`;
       fileLinksMap.set(placeholder, match);
       return placeholder;
     });
     
-    // Replace plain file links
     safeText = safeText.replace(plainFileRegex, (match) => {
       const placeholder = `__FILE_PLACEHOLDER_${placeholderIndex++}__`;
       fileLinksMap.set(placeholder, match);
       return placeholder;
     });
     
-    // Replace quoted file links
     safeText = safeText.replace(quotedFileRegex, (match) => {
       const placeholder = `__FILE_PLACEHOLDER_${placeholderIndex++}__`;
       fileLinksMap.set(placeholder, match);
       return placeholder;
     });
     
-    console.log(`Protected ${fileLinksMap.size} file links with placeholders`);
-    
-    // Step 2: Clean search artifacts and other unwanted content
-    safeText = this.removeSearchArtifacts(safeText);
-    safeText = this.removeInstructions(safeText);
-    safeText = this.normalizeFormatting(safeText);
+    // Step 2: Clean based on preservation settings
+    if (preserveWebSearch) {
+      // Only remove wrapper contexts, preserve citations
+      safeText = safeText.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+      safeText = safeText.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+      safeText = safeText.replace(/\n{4,}/g, '\n\n\n');
+    } else {
+      // Regular aggressive cleaning
+      safeText = this.removeSearchArtifacts(safeText);
+      safeText = this.removeInstructions(safeText);
+      safeText = this.normalizeFormatting(safeText);
+    }
     
     // Step 3: Restore file links
     fileLinksMap.forEach((original, placeholder) => {
       safeText = safeText.replace(placeholder, original);
     });
     
-    console.log('=== CONTENT CLEANING END ===');
-    console.log(`Cleaned text length: ${safeText.length}`);
-    console.log(`Removed ${text.length - safeText.length} characters`);
-    
-    return safeText;
+    return safeText.trim();
   }
 
   /**
@@ -64,21 +110,21 @@ export class ContentCleaningService {
   static removeSearchArtifacts(content: string): string {
     let cleaned = content;
     
-    // ✅ V1 PATTERNS - Target exact V1 search context format
-    cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT - DO NOT INCLUDE IN RESPONSE\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+    // Remove internal context wrappers
+    cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
     cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
     
-    // ✅ V1 PATTERNS - Remove web summaries and results as they appeared in V1
+    // Remove web summaries
     cleaned = cleaned.replace(/Web Summary:\s*[^\n]*\n/gi, '');
     cleaned = cleaned.replace(/Current Web Information:\s*\n[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '');
     
-    // ✅ V1 PATTERNS - Remove numbered source entries (V1 format)
+    // Remove numbered source entries
     cleaned = cleaned.replace(/\d+\.\s+[^.]+\.\.\.\s*Source:\s*https?:\/\/[^\s]+\s*/gi, '');
     
-    // ✅ V1 PATTERNS - Remove search instructions
+    // Remove search instructions
     cleaned = cleaned.replace(/IMPORTANT: Please provide a natural response incorporating relevant information[^\n]*\n?/gi, '');
     
-    // Keep only essential V2 patterns that don't conflict with V1
+    // Remove other patterns
     cleaned = cleaned.replace(/\【\d+†source\】/g, '');
     cleaned = cleaned.replace(/Search performed on:\s*[^\n]*\n/gi, '');
     
@@ -86,7 +132,7 @@ export class ContentCleaningService {
   }
 
   /**
-   * Remove instructions and metadata - ENHANCED
+   * Remove instructions and metadata
    */
   static removeInstructions(content: string): string {
     let cleaned = content;
@@ -97,7 +143,7 @@ export class ContentCleaningService {
     cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
     cleaned = cleaned.replace(/Note:\s*\d+\s*files? from previous messages[^\n]*\n?/gi, '');
     
-    // 🔥 ENHANCED: Remove web search instructions
+    // Remove web search instructions
     cleaned = cleaned.replace(/You have access to current web search results[^\n]*\n?/gi, '');
     cleaned = cleaned.replace(/You also have access to current web search results[^\n]*\n?/gi, '');
     
@@ -109,7 +155,7 @@ export class ContentCleaningService {
   }
 
   /**
-   * Normalize overall formatting - ENHANCED
+   * Normalize overall formatting
    */
   static normalizeFormatting(text: string): string {
     let normalized = text;
@@ -119,16 +165,13 @@ export class ContentCleaningService {
     normalized = normalized.replace(/^\s*===\s*$/gm, '');
     normalized = normalized.replace(/^\s*\*\*\*\s*$/gm, '');
     
-    // 🔥 ENHANCED: Clean up empty bullet points from web search removal
+    // Clean up empty bullet points
     normalized = normalized.replace(/^\s*•\s*$/gm, '');
     normalized = normalized.replace(/^\s*\*\s*$/gm, '');
     normalized = normalized.replace(/^\s*-\s*$/gm, '');
     
     // Fix excessive newlines
     normalized = normalized.replace(/\n{3,}/g, '\n\n');
-    
-    // 🔥 ENHANCED: Remove orphaned section headers that might be left after cleaning
-    normalized = normalized.replace(/^\s*Middleware Platforms with API Gateway Management\s*$/gm, '');
     
     // Trim each line and remove empty lines at start/end
     normalized = normalized.split('\n')

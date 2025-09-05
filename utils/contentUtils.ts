@@ -1,3 +1,4 @@
+// utils/contentUtils.ts - Complete content utility functions
 export const extractTextContent = (content: any): string => {
   if (typeof content === 'string') {
     let cleaned = content
@@ -52,10 +53,13 @@ export const extractTextContent = (content: any): string => {
 };
 
 export const cleanSearchArtifactsFromContent = (text: string): string => {
-  if (text.includes('/api/files/')) {
-    return text;
+  // CRITICAL: Check for all types of file links
+  if (hasFileLinks(text)) {
+    console.log('Skipping aggressive cleaning due to file links presence');
+    return cleanMinimal(text);
   }
   
+  // Regular aggressive cleaning when no file links
   let cleaned = text;
   
   cleaned = cleaned.replace(/\[Current Web Information[^\]]*\]:\s*/gi, '');
@@ -72,46 +76,183 @@ export const cleanSearchArtifactsFromContent = (text: string): string => {
   return cleaned;
 };
 
+/**
+ * Minimal cleaning that preserves file links
+ */
+export const cleanMinimal = (text: string): string => {
+  let cleaned = text;
+  
+  // Only remove the most obvious instruction patterns
+  cleaned = cleaned.replace(/IMPORTANT:\s*Please provide a natural response[^.]*\./gi, '');
+  cleaned = cleaned.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+  cleaned = cleaned.replace(/Instructions: Please incorporate[^\n]*\n?/gi, '');
+  cleaned = cleaned.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+  cleaned = cleaned.replace(/You have access to current web search results[^\n]*\n?/gi, '');
+  cleaned = cleaned.replace(/Please format your response as a valid JSON[^\n]*\n?/gi, '');
+  
+  // Gentle formatting cleanup
+  cleaned = cleaned.replace(/\n{5,}/g, '\n\n\n');
+  cleaned = cleaned.trim();
+  
+  return cleaned;
+};
+
+/**
+ * Check if content has any type of file links
+ */
+export const hasFileLinks = (content: string): boolean => {
+  if (typeof content !== 'string') return false;
+  
+  // Check for all types of file links
+  return content.includes('/api/files/') || 
+         content.includes('sandbox:/') || 
+         content.includes('sandbox://') ||
+         content.includes('blob.vercel-storage.com') ||
+         content.includes('vercel-storage.com');
+};
+
+/**
+ * Map sandbox URLs to downloadable URLs
+ */
+export const mapSandboxUrlsToDownloadable = (
+  content: string, 
+  fileMapping: Map<string, string>
+): string => {
+  if (!content || typeof content !== 'string') return content;
+  if (fileMapping.size === 0) return content;
+  
+  let mappedContent = content;
+  const sandboxPattern = /sandbox:\/\/mnt\/data\/([^\s\)]+)/g;
+  
+  mappedContent = mappedContent.replace(sandboxPattern, (match, filename) => {
+    // Try exact match
+    if (fileMapping.has(match)) {
+      return fileMapping.get(match)!;
+    }
+    
+    // Try filename match
+    if (fileMapping.has(filename)) {
+      return fileMapping.get(filename)!;
+    }
+    
+    // Try partial match
+    const partialMatch = Array.from(fileMapping.keys()).find(key => {
+      if (typeof key !== 'string') return false;
+      return filename.includes(key) || key.includes(filename);
+    });
+    
+    if (partialMatch) {
+      return fileMapping.get(partialMatch)!;
+    }
+    
+    console.warn(`No mapping found for sandbox URL: ${match}`);
+    return match;
+  });
+  
+  return mappedContent;
+};
+
+/**
+ * Extract tables from markdown content
+ */
 export const extractTables = (content: string): string[] => {
   const tables: string[] = [];
-  const tableRegex = /\|[^|\n]*\|[^|\n]*\|[\s\S]*?(?=\n\n|\n$|$)/g;
-  const markdownTables = content.match(tableRegex);
+  const tableRegex = /\|[^|\n]*\|[^|\n]*\|[\s\S]*?(?=\n\n|\n[A-Z]|$)/g;
+  let match;
   
-  if (markdownTables) {
-    tables.push(...markdownTables.map(table => table.trim()));
+  while ((match = tableRegex.exec(content)) !== null) {
+    tables.push(match[0]);
   }
   
   return tables;
 };
 
-export const extractCodeBlocks = (content: string): string[] => {
-  const codeBlocks: string[] = [];
-  const codeRegex = /```[\s\S]*?```/g;
-  const matches = content.match(codeRegex);
+/**
+ * Extract code blocks from content
+ */
+export const extractCodeBlocks = (content: string): Array<{ lang: string; code: string }> => {
+  const codeBlocks: Array<{ lang: string; code: string }> = [];
+  const codeRegex = /```(\w+)?\n([\s\S]*?)```/g;
+  let match;
   
-  if (matches) {
-    codeBlocks.push(...matches.map(block => block.trim()));
+  while ((match = codeRegex.exec(content)) !== null) {
+    codeBlocks.push({
+      lang: match[1] || 'plaintext',
+      code: match[2]
+    });
   }
   
   return codeBlocks;
 };
 
-export const extractLists = (content: string): string[] => {
-  const lists: string[] = [];
+/**
+ * Extract all links from content
+ */
+export const extractLinks = (content: string): Array<{ text: string; url: string }> => {
+  const links: Array<{ text: string; url: string }> = [];
   
-  const numberedListRegex = /(?:^|\n)((?:\d+\.\s+[^\n]+(?:\n(?:\s{2,}[^\n]+|\d+\.\s+[^\n]+))*)+)/gm;
-  const numberedMatches = content.match(numberedListRegex);
+  // Markdown links
+  const mdLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+  let match: RegExpExecArray | null;
   
-  if (numberedMatches) {
-    lists.push(...numberedMatches.map(list => list.trim()));
+  while ((match = mdLinkRegex.exec(content)) !== null) {
+    links.push({
+      text: match[1],
+      url: match[2]
+    });
   }
   
-  const bulletListRegex = /(?:^|\n)((?:[*-]\s+[^\n]+(?:\n(?:\s{2,}[^\n]+|[*-]\s+[^\n]+))*)+)/gm;
-  const bulletMatches = content.match(bulletListRegex);
+  // Plain URLs
+  const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/g;
+  let urlMatch: RegExpExecArray | null;
   
-  if (bulletMatches) {
-    lists.push(...bulletMatches.map(list => list.trim()));
+  while ((urlMatch = urlRegex.exec(content)) !== null) {
+    const url = urlMatch[0];
+    // Only add if not already in markdown link
+    if (!links.some(link => link.url === url)) {
+      links.push({
+        text: url,
+        url: url
+      });
+    }
   }
   
-  return lists;
+  return links;
+};
+
+/**
+ * Check if content has search artifacts
+ */
+export const hasSearchArtifacts = (content: string): boolean => {
+  const patterns = [
+    /\[INTERNAL SEARCH CONTEXT/i,
+    /\[Current Web Information/i,
+    /Web Summary:/i,
+    /Top Search Results:/i,
+    /IMPORTANT: Please provide a natural response/i,
+    /Instructions: Please incorporate/i,
+    /\[Note: Web search was requested/i
+  ];
+  
+  return patterns.some(pattern => pattern.test(content));
+};
+
+/**
+ * Clean content for export
+ */
+export const cleanForExport = (content: string): string => {
+  // Preserve file links but clean everything else
+  if (hasFileLinks(content)) {
+    return cleanMinimal(content);
+  }
+  
+  // Aggressive cleaning for export without file links
+  let cleaned = cleanSearchArtifactsFromContent(content);
+  
+  // Additional export cleaning
+  cleaned = cleaned.replace(/^#+\s*$/gm, ''); // Remove empty headers
+  cleaned = cleaned.replace(/^\*\s*$/gm, ''); // Remove empty list items
+  cleaned = cleaned.replace(/^\s*-\s*$/gm, ''); // Remove empty bullets
+  
+  return cleaned;
 };

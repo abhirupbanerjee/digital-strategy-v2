@@ -50,26 +50,54 @@ export async function POST(request: NextRequest) {
     }
 
     // Handle file uploads
-    const newFileIds = fileIds || [];
-    const existingThreadFiles = [];
+const newFileIds = fileIds || [];
+const existingThreadFiles = [];
+
+if (currentThreadId && threadId) {
+  try {
+    // Step 1: Get the thread file context records
+    const { data: threadFiles, error: threadError } = await supabase
+      .from('thread_file_context')
+      .select('file_id')
+      .eq('thread_id', currentThreadId)
+      .eq('is_active', true);
     
-    if (currentThreadId && threadId) {
-      try {
-        const { data: trackedFiles } = await supabase
-          .from('thread_files')
+    if (threadError) {
+      console.error('Error fetching thread file context:', threadError);
+    }
+    
+    if (threadFiles && threadFiles.length > 0) {
+      // Step 2: Extract the file IDs
+      const fileIds = threadFiles.map(tf => tf.file_id).filter(Boolean);
+      
+      if (fileIds.length > 0) {
+        // Step 3: Get the actual file records
+        const { data: fileRecords, error: fileError } = await supabase
+          .from('file_context_tracking')
           .select('openai_file_id')
-          .eq('thread_id', currentThreadId)
-          .eq('is_active', true);
+          .in('id', fileIds);
         
-        if (trackedFiles) {
-          existingThreadFiles.push(...trackedFiles.map(f => f.openai_file_id));
+        if (fileError) {
+          console.error('Error fetching file context tracking:', fileError);
         }
-      } catch (error) {
-        console.error('Error fetching thread files:', error);
+        
+        if (fileRecords) {
+          existingThreadFiles.push(...fileRecords.map(f => f.openai_file_id).filter(Boolean));
+        }
       }
     }
+  } catch (error) {
+    console.error('Error fetching thread files:', error);
+  }
+}
 
-    const allFileIds = [...new Set([...existingThreadFiles, ...newFileIds])];
+const allFileIds = [...new Set([...existingThreadFiles, ...newFileIds])];
+
+if (DEBUG && allFileIds.length > 0) {
+  console.log(`📎 Thread has ${allFileIds.length} total file(s)`);
+}
+
+
     
     // Handle web search using Tavily client
     let searchSources: Array<{title: string, url: string, snippet: string, relevanceScore: number}> = [];

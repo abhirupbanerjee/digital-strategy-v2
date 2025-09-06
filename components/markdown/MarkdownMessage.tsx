@@ -60,42 +60,58 @@ export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({
               </p>
             );
           },
-
           a: ({ href, children, ...props }) => {
-            const isCitation = href?.startsWith('http');
-            const isFileDownload = href?.startsWith('/api/files/');
-            
-            if (isFileDownload) {
+                // Check for various file download patterns
+                const isFileDownload = 
+                  href?.startsWith('/api/files/') || 
+                  href?.includes('sandbox:/') ||
+                  href?.includes('blob.vercel-storage.com');
+                
+                if (isFileDownload) {
+                  // Handle sandbox URLs that weren't converted
+                  let downloadUrl = href;
+                  if (href?.includes('sandbox:/')) {
+                    // Extract filename and create API endpoint
+                    const match = href.match(/sandbox:\/\/mnt\/data\/(.+)/);
+                    const filename = match ? match[1] : 'file';
+                    // This will be handled by the API endpoint
+                    downloadUrl = `/api/files/pending?filename=${encodeURIComponent(filename)}`;
+                  }
+                  
+                  return (
+                  <a 
+                    href={downloadUrl}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:text-blue-800 underline font-medium inline-flex items-center gap-1"
+                    {...props}
+                  >
+                    📎 {children}
+                  </a>
+                );
+              }
+
+              // Check if it's a citation
+              const isCitation = href?.startsWith('http');
+
               return (
                 <a 
-                  href={href}
-                  download
-                  target="_blank"
+                  href={href} 
+                  target="_blank" 
                   rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800 underline"
+                  className={isCitation 
+                    ? "text-blue-600 hover:text-blue-800 underline text-sm"
+                    : "text-blue-600 hover:text-blue-800 underline"
+                  }
                   {...props}
                 >
                   {children}
                 </a>
-              );
-            }
-            
-            return (
-              <a 
-                href={href} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className={isCitation 
-                  ? "text-blue-600 hover:text-blue-800 underline decoration-1 hover:decoration-2 transition-colors"
-                  : "text-blue-600 hover:text-blue-800 underline"
-                }
-                {...props}
-              >
-                {children}
-                {isCitation && <span className="text-xs ml-1">↗</span>}
-              </a>
-            );
+          );
           },
+
+
           code: ({ inline, className, children, ...props }: any) => {
             return inline ? (
               <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs md:text-sm font-mono" {...props}>

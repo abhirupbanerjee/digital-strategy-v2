@@ -1,6 +1,6 @@
 // services/contentCleaningService.ts - Complete content cleaning service with sandbox URL support
 export class ContentCleaningService {
-  /**
+    /**
    * Clean content for active chat display
    * CRITICAL: Must handle OpenAI sandbox URLs and preserve file links
    */
@@ -13,11 +13,13 @@ export class ContentCleaningService {
     if (typeof content !== 'string') return content;
     
     console.log('=== CONTENT CLEANING START ===');
+    
+    // FIXED: Check for file links in the actual content being cleaned
     const hasLinks = this.detectFileLinks(content);
     console.log('Original content has file links:', hasLinks);
     
-    // ALWAYS preserve file links by default
-    if (preserveFileLinks) {
+    // If content has file links or we should preserve them, use preservation method
+    if (hasLinks || preserveFileLinks) {
       return this.cleanWithFilePreservation(content, preserveWebSearch);
     }
     
@@ -26,20 +28,33 @@ export class ContentCleaningService {
   }
 
   /**
-   * Detect if content has any file links
+   * Detect if content has any file links - UPDATED
    */
   static detectFileLinks(content: string): boolean {
     if (!content || typeof content !== 'string') return false;
     
-    return content.includes('/api/files/') || 
-           content.includes('sandbox:/') || 
-           content.includes('sandbox://') ||
-           content.includes('blob.vercel-storage.com') ||
-           content.includes('vercel-storage.com');
+    // More comprehensive detection patterns
+    const patterns = [
+      /\/api\/files\//i,
+      /sandbox:\/\//i,
+      /sandbox:\/\/mnt\/data\//i,
+      /blob\.vercel-storage\.com/i,
+      /vercel-storage\.com/i,
+      /\[Download[^\]]*\]\([^)]+\)/i,  // Markdown download links
+      /file-[a-zA-Z0-9]+/i  // OpenAI file IDs
+    ];
+    
+    const hasLinks = patterns.some(pattern => pattern.test(content));
+    
+    if (hasLinks) {
+      console.log('Detected file link patterns in content');
+    }
+    
+    return hasLinks;
   }
 
-  /**
-   * Clean content while ABSOLUTELY preserving file links
+    /**
+   * Clean content while ABSOLUTELY preserving file links - UPDATED
    */
   static cleanWithFilePreservation(text: string, preserveWebSearch: boolean = false): string {
     if (typeof text !== 'string') return text;
@@ -51,26 +66,19 @@ export class ContentCleaningService {
     
     // Comprehensive file link patterns INCLUDING OpenAI sandbox URLs
     const filePatterns = [
-      // OpenAI sandbox URLs - CRITICAL PATTERNS
-      /sandbox:\/\/mnt\/data\/[^\s\)]+/g,
-      /sandbox:\/\/[^\s\)]+/g, // Any sandbox URL
-      // Markdown links with sandbox URLs
-      /\[([^\]]+)\]\(sandbox:\/\/[^)]+\)/g,
-      // Markdown links with /api/files/
-      /\[([^\]]+)\]\(\/api\/files\/[^)]+\)/g,
-      // Plain /api/files/ URLs
+      // API file URLs
       /\/api\/files\/[a-zA-Z0-9-_]+/g,
-      // Quoted file URLs
-      /"\/api\/files\/[^"]+"/g,
-      /`\/api\/files\/[^`]+`/g,
-      // HTML attributes with file URLs
-      /href="\/api\/files\/[^"]+"/g,
-      /src="\/api\/files\/[^"]+"/g,
-      // Vercel blob URLs (multiple patterns)
+      // OpenAI sandbox URLs
+      /sandbox:\/\/mnt\/data\/[^\s\)]+/g,
+      /sandbox:\/\/[^\s\)]+/g,
+      // Markdown links with file URLs
+      /\[([^\]]+)\]\((\/api\/files\/[^)]+)\)/g,
+      /\[([^\]]+)\]\((sandbox:\/\/[^)]+)\)/g,
+      // Vercel blob URLs
       /https:\/\/[a-zA-Z0-9-]+\.public\.blob\.vercel-storage\.com\/[^)\s]+/g,
       /https:\/\/[^\/]+\.vercel-storage\.com\/[^)\s]+/g,
-      // Markdown links with blob URLs
-      /\[([^\]]+)\]\(https:\/\/[^\/]+\.vercel-storage\.com\/[^)]+\)/g
+      // File IDs
+      /file-[a-zA-Z0-9]+/g
     ];
     
     // Replace ALL file patterns with placeholders
@@ -83,28 +91,22 @@ export class ContentCleaningService {
       });
     });
     
-    // Step 2: Remove ONLY the specific search instruction text
-    protectedText = protectedText.replace(
-      /IMPORTANT:\s*Please provide a natural response[^.]*\./gi, 
-      ''
-    );
-    
-    // Remove variations of the instruction
-    protectedText = protectedText.replace(/Cite sources naturally[^.]*but do not mention[^.]*\./gi, '');
-    protectedText = protectedText.replace(/Focus on being helpful and accurate\./gi, '');
-    
-    // Remove search context wrappers
-    protectedText = protectedText.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
-    
-    // Remove other instruction patterns but be careful
-    protectedText = protectedText.replace(/Instructions: Please incorporate[^\n]*\n?/gi, '');
-    protectedText = protectedText.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
-    protectedText = protectedText.replace(/You have access to current web search results[^\n]*\n?/gi, '');
-    protectedText = protectedText.replace(/Please format your response as a valid JSON[^\n]*\n?/gi, '');
-    protectedText = protectedText.replace(/DO NOT include any text outside[^\n]*\n?/gi, '');
-    
-    // Remove web search artifacts if not preserving
-    if (!preserveWebSearch) {
+    // Step 2: Clean content based on settings
+    if (preserveWebSearch) {
+      // When preserving web search, only remove wrapper contexts
+      protectedText = protectedText.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+      protectedText = protectedText.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+      protectedText = protectedText.replace(/IMPORTANT:\s*Please provide a natural response[^.]*\./gi, '');
+      protectedText = protectedText.replace(/Instructions: Please incorporate[^\n]*\n?/gi, '');
+      // DO NOT remove Source: lines or URLs when preserving web search
+    } else {
+      // Remove all search artifacts when not preserving
+      protectedText = protectedText.replace(/IMPORTANT:\s*Please provide a natural response[^.]*\./gi, '');
+      protectedText = protectedText.replace(/\[INTERNAL SEARCH CONTEXT[^\]]*\]:[^]*?\[END SEARCH CONTEXT\]/gi, '');
+      protectedText = protectedText.replace(/Instructions: Please incorporate[^\n]*\n?/gi, '');
+      protectedText = protectedText.replace(/\[Note: Web search was requested[^\]]*\]/gi, '');
+      protectedText = protectedText.replace(/You have access to current web search results[^\n]*\n?/gi, '');
+      protectedText = protectedText.replace(/Please format your response as a valid JSON[^\n]*\n?/gi, '');
       protectedText = protectedText.replace(/Web Summary:\s*[^\n]*\n/gi, '');
       protectedText = protectedText.replace(/Current Web Information:\s*\n[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '');
       protectedText = protectedText.replace(/Top Search Results:\s*\n[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '');
@@ -123,12 +125,10 @@ export class ContentCleaningService {
     });
     
     console.log('=== CONTENT CLEANING END ===');
-    // FIXED: Check for all types of file links including sandbox:/
     const finalHasLinks = this.detectFileLinks(protectedText);
     console.log('Final content has file links:', finalHasLinks);
     console.log(`Preserved ${fileLinksMap.size} file links`);
     
-    // Debug: Show samples of preserved links
     if (fileLinksMap.size > 0) {
       const samples = Array.from(fileLinksMap.values()).slice(0, 3);
       samples.forEach((link, i) => {

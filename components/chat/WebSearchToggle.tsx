@@ -33,6 +33,8 @@ export const WebSearchToggle: React.FC<WebSearchToggleProps> = ({
     <label className="flex items-center cursor-pointer">
       <input
         type="checkbox"
+        id="web-search-toggle"
+        name="webSearch"
         checked={enabled}
         onChange={onToggle}
         className="mr-2 w-4 h-4 text-blue-600 rounded"

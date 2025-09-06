@@ -1,4 +1,4 @@
-// app/api/threads/route.ts - Complete updated file
+// app/api/threads/route.ts - COMPLETE REVISED VERSION WITH ALL FIXES
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { ContentCleaningService } from '@/services/contentCleaningService';
@@ -115,57 +115,117 @@ async function processFileAnnotations(
 }
 
 /**
- * Map sandbox URLs to downloadable URLs with better attachment handling
+ * Enhanced sandbox URL mapping with fileOutput support
+ * This MUST run BEFORE any content cleaning
  */
-async function mapSandboxUrlsToFiles(
-  content: string, 
-  threadId: string,
-  annotations: any[],
+async function mapAllSandboxUrls(
   message: any,
+  threadId: string,
   supabase: any
-): Promise<string> {
-  if (!content || typeof content !== 'string') return content;
-  
-  // Quick check for sandbox URLs
-  if (!content.includes('sandbox:/')) return content;
-  
+): Promise<any> {
   console.log(`=== MAPPING SANDBOX URLs ===`);
-  console.log(`Thread: ${threadId}, Message: ${message.id}`);
-  console.log(`Content has sandbox URLs:`, content.includes('sandbox:/'));
-  console.log(`Message has ${message.attachments?.length || 0} attachments`);
+  console.log(`Processing message: ${message.id}`);
   
-  // If we have attachments and sandbox URLs, map them directly
-  if (message.attachments && message.attachments.length > 0 && content.includes('sandbox:/')) {
-    const sandboxPattern = /sandbox:\/\/mnt\/data\/([^\s\)\]]+)/g;
-    let mappedContent = content;
-    
-    // For each sandbox URL found
-    let match;
-    let urlIndex = 0;
-    while ((match = sandboxPattern.exec(content)) !== null) {
-      const sandboxUrl = match[0];
-      const filename = match[1];
-      
-      // Use the attachment at the corresponding index or the first one
-      const attachment = message.attachments[urlIndex] || message.attachments[0];
-      if (attachment && attachment.file_id) {
+  // Build a map of ALL available file mappings
+  const fileMapping = new Map<string, string>();
+  
+  // First, get ALL file mappings from annotations
+  if (message.content && Array.isArray(message.content)) {
+    for (const item of message.content) {
+      if (item.type === 'text' && item.text?.annotations) {
+        for (const annotation of item.text.annotations) {
+          if (annotation.type === 'file_path' && annotation.file_path?.file_id) {
+            const sandboxUrl = annotation.text;
+            const fileId = annotation.file_path.file_id;
+            const downloadUrl = `/api/files/${fileId}`;
+            fileMapping.set(sandboxUrl, downloadUrl);
+            console.log(`Annotation mapping: ${sandboxUrl} -> ${downloadUrl}`);
+          }
+        }
+      }
+    }
+  }
+  
+  // Also map attachments
+  if (message.attachments && Array.isArray(message.attachments)) {
+    for (const attachment of message.attachments) {
+      if (attachment.file_id) {
+        // Try to find the sandbox URL for this attachment
         const downloadUrl = `/api/files/${attachment.file_id}`;
-        mappedContent = mappedContent.replace(sandboxUrl, downloadUrl);
-        console.log(`Mapped: ${sandboxUrl} -> ${downloadUrl}`);
+        fileMapping.set(attachment.file_id, downloadUrl);
+      }
+    }
+  }
+  
+  // Now process and replace sandbox URLs in content
+  let content = message.content;
+  
+  // Extract text content
+  if (Array.isArray(content)) {
+    content = content
+      .map((item: any) => {
+        if (item.type === 'text' && item.text?.value) {
+          let text = item.text.value;
+          
+          // Replace ALL sandbox URLs using our mapping
+          fileMapping.forEach((downloadUrl, sandboxUrl) => {
+            if (text.includes(sandboxUrl)) {
+              text = text.replace(new RegExp(sandboxUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), downloadUrl);
+              console.log(`Replaced: ${sandboxUrl} -> ${downloadUrl}`);
+            }
+          });
+          
+          return text;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  } else if (typeof content === 'string') {
+    // Replace sandbox URLs in string content
+    fileMapping.forEach((downloadUrl, sandboxUrl) => {
+      if (content.includes(sandboxUrl)) {
+        content = content.replace(new RegExp(sandboxUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), downloadUrl);
+        console.log(`Replaced: ${sandboxUrl} -> ${downloadUrl}`);
+      }
+    });
+  }
+  
+  // Update message content
+  message.content = content;
+  console.log(`=== MAPPING COMPLETE ===`);
+  return message;
+}
+
+/**
+ * Process fileOutput array (for images/graphs)
+ * Injects image references into content
+ */
+async function processFileOutput(message: any, threadId: string, supabase: any): Promise<any> {
+  // Check if this is from our API response with fileOutput
+  if (message.fileOutput && Array.isArray(message.fileOutput)) {
+    console.log(`Processing ${message.fileOutput.length} file outputs`);
+    
+    let additionalContent = '';
+    
+    for (const file of message.fileOutput) {
+      if (file.fileId) {
+        const fileUrl = `/api/files/${file.fileId}`;
+        const description = file.description || 'Generated file';
         
-        // Store this mapping in the database
+        // Store file reference in database for later retrieval
         try {
           await supabase
             .from('blob_files')
             .upsert({
-              openai_file_id: attachment.file_id,
-              file_id: attachment.file_id,
-              sandbox_url: sandboxUrl,
+              openai_file_id: file.fileId,
+              file_id: file.fileId,
               thread_id: threadId,
               message_id: message.id,
-              filename: filename,
-              type: 'file',
-              content_type: 'application/octet-stream',
+              filename: `${description.replace(/\s+/g, '_')}.png`, // Default to PNG for graphs
+              description: description,
+              type: 'image',
+              content_type: 'image/png',
               file_size: 0,
               created_at: new Date().toISOString()
             }, {
@@ -173,162 +233,160 @@ async function mapSandboxUrlsToFiles(
               ignoreDuplicates: false
             });
         } catch (error) {
-          console.error('Failed to store mapping:', error);
+          console.error('Failed to store file output mapping:', error);
         }
+        
+        // Determine if it's an image based on description or file ID
+        const isImage = description.toLowerCase().includes('graph') || 
+                       description.toLowerCase().includes('chart') || 
+                       description.toLowerCase().includes('image') ||
+                       description.toLowerCase().includes('diagram') ||
+                       description.toLowerCase().includes('plot') ||
+                       description.toLowerCase().includes('visualization');
+        
+        if (isImage) {
+          // Add image markdown
+          additionalContent += `\n\n![${description}](${fileUrl})`;
+        } else {
+          // Add download link
+          additionalContent += `\n\n[Download ${description}](${fileUrl})`;
+        }
+        
+        console.log(`Added ${isImage ? 'image' : 'file'} reference: ${fileUrl}`);
       }
-      urlIndex++;
     }
     
-    console.log(`=== MAPPING COMPLETE ===`);
-    return mappedContent;
+    // Append to existing content
+    if (additionalContent) {
+      if (typeof message.content === 'string') {
+        message.content += additionalContent;
+      } else {
+        message.content = (message.content || '') + additionalContent;
+      }
+    }
   }
   
-  // Return original content if no mapping was done
-  return content;
+  return message;
 }
+
+/**
+ * GET endpoint - Retrieve thread messages
+ */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const threadId = searchParams.get('threadId');
-    const limit = parseInt(searchParams.get('limit') || '50');
+    const limit = parseInt(searchParams.get('limit') || '100');
 
     if (!threadId) {
-      return NextResponse.json({ error: 'Thread ID is required' }, { status: 400 });
+      return NextResponse.json({ error: 'Thread ID required' }, { status: 400 });
     }
 
-    // Initialize file handler
-    const fileHandler = new OpenAIFileHandler();
-
-    // Fetch thread messages from OpenAI
+    // Initialize OpenAI handler
+    const openaiHandler = new OpenAIFileHandler();
+    
+    // Initialize OpenAI client
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
+    // Retrieve thread messages from OpenAI
     const messagesResponse = await openai.beta.threads.messages.list(threadId, { limit });
     const messages = messagesResponse.data;
     
-    // First pass: Process all file annotations
-    for (const message of messages) {
-      await processFileAnnotations(message, threadId, supabase);
+    if (!messages || messages.length === 0) {
+      return NextResponse.json({
+        messages: [],
+        totalMessages: 0,
+        fileCount: 0
+      });
     }
-    
-    // Second pass: Process and clean messages
+
+    // CRITICAL: Process messages in the correct order
     const processedMessages = await Promise.all(
       messages.map(async (msg: any) => {
-        let content = msg.content;
+        // Step 1: Process file annotations first
+        await processFileAnnotations(msg, threadId, supabase);
         
-        // Handle content array
-        if (Array.isArray(content)) {
-          content = await Promise.all(
-            content.map(async (item: any) => {
+        // Step 2: Map sandbox URLs BEFORE any cleaning
+        const mappedMessage = await mapAllSandboxUrls(msg, threadId, supabase);
+        
+        // Step 3: Process fileOutput array (for images)
+        const messageWithFiles = await processFileOutput(mappedMessage, threadId, supabase);
+        
+        // Step 4: Process with OpenAI file handler as additional processing
+        let finalContent = messageWithFiles.content;
+        
+        // Handle array content
+        if (Array.isArray(finalContent)) {
+          finalContent = finalContent
+            .map((item: any) => {
               if (item.type === 'text' && item.text?.value) {
-                // Get annotations for this text
-                const annotations = item.text.annotations || [];
-                
-                // Map sandbox URLs including annotations AND message attachments
-                let mappedText = await mapSandboxUrlsToFiles(
-                  item.text.value, 
-                  threadId,
-                  annotations,
-                  msg, // Pass the full message object
-                  supabase
-                );
-                
-                // Process with OpenAI file handler as backup
-                mappedText = await fileHandler.processOpenAIMessage(
-                  mappedText,
-                  threadId,
-                  msg.id
-                );
-                
-                return {
-                  ...item,
-                  text: {
-                    ...item.text,
-                    value: mappedText
-                  }
-                };
+                return item.text.value;
               }
-              return item;
+              return '';
             })
+            .filter(Boolean)
+            .join('\n');
+        }
+        
+        // Additional processing with OpenAI file handler
+        if (typeof finalContent === 'string') {
+          finalContent = await openaiHandler.processOpenAIMessage(
+            finalContent,
+            threadId,
+            messageWithFiles.id
           );
         }
         
+        // Return message with processed content
         return {
-          ...msg,
-          content: content
+          ...messageWithFiles,
+          content: finalContent
         };
       })
     );
 
-    // Clean messages - FIXED to preserve URLs
+    // Step 5: NOW clean messages (after all mapping is complete)
     const cleanedMessages = processedMessages.map((msg: any) => {
       let cleanedContent = msg.content;
       
-      if (Array.isArray(cleanedContent)) {
-        // Process each content item individually to preserve URLs
-        cleanedContent = cleanedContent
-          .map((item: any) => {
-            if (item.type === 'text' && item.text?.value) {
-              // Clean the text but preserve file links
-              const cleaned = ContentCleaningService.cleanForActiveChat(item.text.value, {
-                preserveWebSearch: false,
-                preserveFileLinks: true
-              });
-              return cleaned;
-            }
-            return '';
-          })
-          .filter(Boolean)
-          .join('\n');
-      } else if (typeof cleanedContent === 'string') {
+      // Clean content while preserving the mapped file links
+      if (typeof cleanedContent === 'string') {
         cleanedContent = ContentCleaningService.cleanForActiveChat(cleanedContent, {
           preserveWebSearch: false,
-          preserveFileLinks: true
+          preserveFileLinks: true // This will now detect and preserve our mapped URLs
         });
       }
       
-      // Return simplified message structure with cleaned content
+      // Return simplified message structure
       return {
         id: msg.id,
         role: msg.role,
-        content: cleanedContent, // Now contains the mapped URLs
+        content: cleanedContent,
         created_at: msg.created_at,
         file_ids: msg.file_ids || [],
         attachments: msg.attachments || []
       };
     });
 
-    // Extract file attachments for summary
-    const fileAttachments = cleanedMessages.reduce((acc: any[], msg: any) => {
-      if (msg.attachments && msg.attachments.length > 0) {
-        msg.attachments.forEach((attachment: any) => {
-          if (attachment.file_id) {
-            acc.push({
-              file_id: attachment.file_id,
-              message_id: msg.id,
-              role: msg.role
-            });
-          }
-        });
-      }
-      return acc;
-    }, []);
+    // Count unique file attachments
+    const fileCount = new Set(
+      cleanedMessages.flatMap((msg: any) => 
+        (msg.attachments || []).map((a: any) => a.file_id).filter(Boolean)
+      )
+    ).size;
 
     console.log(`📖 Retrieved ${cleanedMessages.length} messages from thread ${threadId}`);
-    console.log(`📎 Found ${fileAttachments.length} file attachments`);
+    console.log(`📎 Found ${fileCount} file attachments`);
 
     return NextResponse.json({
-      success: true,
-      thread: {
-        id: threadId,
-        messages: cleanedMessages.reverse(), // Reverse to get chronological order
-        totalMessages: cleanedMessages.length,
-        fileCount: fileAttachments.length
-      }
+      messages: cleanedMessages,
+      totalMessages: cleanedMessages.length,
+      fileCount: fileCount
     });
 
   } catch (error) {
-    console.error('Error fetching thread:', error);
+    console.error('Error fetching thread messages:', error);
     return NextResponse.json(
       { error: 'Failed to fetch thread messages' },
       { status: 500 }
@@ -336,56 +394,109 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * POST endpoint - Save thread to database
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { projectId, title } = body;
+    const { threadId, title, messages, projectId } = body;
 
-    if (!title) {
-      return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    if (!threadId || !messages) {
+      return NextResponse.json(
+        { error: 'Thread ID and messages are required' },
+        { status: 400 }
+      );
     }
 
-    // Create new OpenAI thread
-    const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    
-    const thread = await openai.beta.threads.create();
+    // Clean messages before saving
+    const cleanedMessages = messages.map((msg: any) => ({
+      ...msg,
+      content: ContentCleaningService.cleanForDisplay(msg.content)
+    }));
 
-    // Store thread in database
-    const { data, error } = await supabase
+    // Upsert thread record
+    const { data: thread, error: threadError } = await supabase
       .from('threads')
-      .insert({
-        id: thread.id,
+      .upsert({
+        id: threadId,
+        title: title || 'New Thread',
+        messages: cleanedMessages,
         project_id: projectId || null,
-        title: title,
-        message_count: 0,
-        last_activity: new Date().toISOString()
+        updated_at: new Date().toISOString()
       })
       .select()
       .single();
 
-    if (error) {
-      console.error('Error storing thread:', error);
-      // Still return the thread even if DB storage fails
-      return NextResponse.json({
-        success: true,
-        thread: {
-          id: thread.id,
-          title: title,
-          project_id: projectId
-        }
-      });
+    if (threadError) {
+      console.error('Error saving thread:', threadError);
+      return NextResponse.json(
+        { error: 'Failed to save thread' },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
       success: true,
-      thread: data
+      thread: thread
     });
 
   } catch (error) {
-    console.error('Error creating thread:', error);
+    console.error('Error in POST /api/threads:', error);
     return NextResponse.json(
-      { error: 'Failed to create thread' },
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE endpoint - Delete thread from database
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const threadId = searchParams.get('threadId');
+
+    if (!threadId) {
+      return NextResponse.json(
+        { error: 'Thread ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Delete thread from database (cascade will handle related records)
+    const { error } = await supabase
+      .from('threads')
+      .delete()
+      .eq('id', threadId);
+
+    if (error) {
+      console.error('Error deleting thread:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete thread' },
+        { status: 500 }
+      );
+    }
+
+    // Optionally try to delete from OpenAI (may fail if doesn't exist)
+    try {
+      const OpenAI = (await import('openai')).default;
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      await openai.beta.threads.del(threadId);
+    } catch (openaiError) {
+      console.log('OpenAI thread deletion failed (may not exist):', openaiError);
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Thread deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error in DELETE /api/threads:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

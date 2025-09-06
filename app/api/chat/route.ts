@@ -6,6 +6,7 @@ import { ApiError, createErrorResponse } from '@/lib/utils/apiErrors';
 import { ContentCleaningService } from '@/services/contentCleaningService';
 import { ThreadFileService } from '@/services/threadFileService';
 
+
 const ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID;
 
 // Polling configuration
@@ -21,6 +22,7 @@ const supabase = createClient(
 
 const DEBUG = process.env.NODE_ENV === 'development' && process.env.DEBUG_CHAT === 'true';
 
+// Main POST handler - with file download and web search fix
 export async function POST(request: NextRequest) {
   try {
     const { message, threadId, fileIds, webSearchEnabled, useJsonFormat, originalMessage } = await request.json();
@@ -36,7 +38,7 @@ export async function POST(request: NextRequest) {
 
     let currentThreadId = threadId;
 
-    // Create thread if needed using OpenAI client's createThread method
+    // Create thread if needed
     if (!currentThreadId) {
       if (DEBUG) console.log('Creating new thread...');
       try {
@@ -50,108 +52,73 @@ export async function POST(request: NextRequest) {
     }
 
     // Handle file uploads
-const newFileIds = fileIds || [];
-const existingThreadFiles = [];
+    const newFileIds = fileIds || [];
+    const existingThreadFiles:string[]= [];
 
-if (currentThreadId && threadId) {
-  try {
-    // Step 1: Get the thread file context records
-    const { data: threadFiles, error: threadError } = await supabase
-      .from('thread_file_context')
-      .select('file_id')
-      .eq('thread_id', currentThreadId)
-      .eq('is_active', true);
-    
-    if (threadError) {
-      console.error('Error fetching thread file context:', threadError);
-    }
-    
-    if (threadFiles && threadFiles.length > 0) {
-      // Step 2: Extract the file IDs
-      const fileIds = threadFiles.map(tf => tf.file_id).filter(Boolean);
-      
-      if (fileIds.length > 0) {
-        // Step 3: Get the actual file records
-        const { data: fileRecords, error: fileError } = await supabase
-          .from('file_context_tracking')
-          .select('openai_file_id')
-          .in('id', fileIds);
-        
-        if (fileError) {
-          console.error('Error fetching file context tracking:', fileError);
+    if (currentThreadId && threadId) {
+      try {
+        const { data: threadFiles } = await supabase
+          .from('thread_file_context')
+          .select('*')
+          .eq('thread_id', currentThreadId)
+          .eq('is_active', true);
+
+        if (threadFiles) {
+          threadFiles.forEach((file: any) => {
+            const fileContext = file.file_context_tracking;
+            if (fileContext?.openai_file_id) {
+              existingThreadFiles.push(fileContext.openai_file_id);
+            }
+          });
         }
-        
-        if (fileRecords) {
-          existingThreadFiles.push(...fileRecords.map(f => f.openai_file_id).filter(Boolean));
-        }
+      } catch (error) {
+        console.error('Error fetching thread files:', error);
       }
     }
-  } catch (error) {
-    console.error('Error fetching thread files:', error);
-  }
-}
 
-const allFileIds = [...new Set([...existingThreadFiles, ...newFileIds])];
+    const allFileIds = [...new Set([...existingThreadFiles, ...newFileIds])];
+    if (DEBUG) console.log('Total file IDs for thread:', allFileIds);
 
-if (DEBUG && allFileIds.length > 0) {
-  console.log(`📎 Thread has ${allFileIds.length} total file(s)`);
-}
-
-
-    
-    // Handle web search using Tavily client
-    let searchSources: Array<{title: string, url: string, snippet: string, relevanceScore: number}> = [];
+    // Handle web search
     let webSearchPerformed = false;
-    let enhancedMessage = message;
+    let searchSources: any[] = [];
+    let messageContent = message;
 
     if (webSearchEnabled && tavilyClient) {
       try {
-        const searchQuery = originalMessage || message;
-        if (DEBUG) console.log('🔍 Performing web search for:', searchQuery);
+        if (DEBUG) console.log('Performing web search...');
+        const searchResults = await tavilyClient.search(originalMessage || message);
         
-        const searchResults = await tavilyClient.search({
-          query: searchQuery,
-          maxResults: 5,
-          searchDepth: 'advanced',
-          includeAnswer: true,
-        });
-        
-        if (searchResults.results && searchResults.results.length > 0) {
+        if (searchResults && searchResults.results) {
           webSearchPerformed = true;
-          searchSources = searchResults.results.map((result: any, index: number) => ({
-            title: result.title,
-            url: result.url,
-            snippet: result.content.substring(0, 200),
-            relevanceScore: result.score || (index + 1)
+          searchSources = searchResults.results.map((r: any) => ({
+            title: r.title,
+            url: r.url,
+            snippet: r.content?.substring(0, 200) + '...'
           }));
           
-          // Format message with search context
-          enhancedMessage = formatSearchEnhancedMessage(message, searchResults, useJsonFormat);
-          if (DEBUG) console.log(`✅ Web search completed: ${searchResults.results.length} results found`);
+          messageContent = formatSearchEnhancedMessage(message, searchResults, useJsonFormat || false);
+          if (DEBUG) console.log('Web search enhanced message created');
         }
       } catch (error) {
         console.error('Web search failed:', error);
-        // Continue without search results
       }
     }
 
-    // Prepare message content
-    const messageContent = webSearchPerformed || useJsonFormat ? 
-      enhancedMessage : (originalMessage || message);
+    const enhancedMessage = webSearchPerformed ? messageContent : (originalMessage || message);
 
-    // Add message to thread using the correct openaiClient method
+    // Add message to thread
     try {
-      await openaiClient.addMessage(currentThreadId, messageContent, allFileIds.length > 0 ? allFileIds : undefined);
+      await openaiClient.addMessage(currentThreadId, enhancedMessage, allFileIds.length > 0 ? allFileIds : undefined);
       if (DEBUG) console.log('Message added to thread successfully');
     } catch (error) {
       console.error('Failed to add message:', error);
       throw new ApiError('Failed to add message to thread', 500, 'MESSAGE_ERROR');
     }
 
-    // Create run using the correct openaiClient method
+    // Create run
     let run;
     try {
-      // The createRun method optionally takes assistantId and instructions
       run = await openaiClient.createRun(currentThreadId, ASSISTANT_ID);
       if (DEBUG) console.log('Run created:', run.id);
     } catch (error) {
@@ -159,7 +126,7 @@ if (DEBUG && allFileIds.length > 0) {
       throw new ApiError('Failed to create run', 500, 'RUN_ERROR');
     }
 
-    // Poll for completion using openaiClient's waitForRunCompletion method
+    // Poll for completion
     const maxRetries = webSearchEnabled ? WEB_SEARCH_MAX_RETRIES : MAX_RETRIES;
     const pollInterval = webSearchEnabled ? WEB_SEARCH_POLL_INTERVAL : POLL_INTERVAL;
     
@@ -181,7 +148,7 @@ if (DEBUG && allFileIds.length > 0) {
     let extractedResponse: any = { type: 'text', content: reply };
 
     if (completedRun.status === 'completed') {
-      // Get messages from thread using the correct openaiClient method
+      // Get messages from thread
       const messages = await openaiClient.getMessages(currentThreadId, 1);
       
       if (messages.data && messages.data.length > 0) {
@@ -189,10 +156,22 @@ if (DEBUG && allFileIds.length > 0) {
         extractedResponse = await extractTextFromMessage(assistantMessage);
         reply = extractedResponse.content || 'No response received.';
         
-        // Handle any file outputs
-        if (extractedResponse.files && storageClient) {
-          for (const file of extractedResponse.files) {
-            await uploadFileToStorage(file.fileId, file.description, currentThreadId);
+        // CRITICAL FIX: Process file outputs (images/graphs)
+        if (extractedResponse.files && extractedResponse.files.length > 0) {
+          reply = await processFileOutputs(
+            extractedResponse.files,
+            currentThreadId,
+            reply
+          );
+          
+          // Also handle storage upload for non-image files
+          if (storageClient) {
+            for (const file of extractedResponse.files) {
+              if (!file.description.toLowerCase().includes('image') && 
+                  !file.description.toLowerCase().includes('graph')) {
+                await uploadFileToStorage(file.fileId, file.description, currentThreadId);
+              }
+            }
           }
         }
       }
@@ -202,11 +181,8 @@ if (DEBUG && allFileIds.length > 0) {
         : 'The assistant run failed. Please try again.';
       extractedResponse = { type: 'text', content: reply };
     } else if (completedRun.status === 'requires_action') {
-      // Handle tool outputs if needed
-      if (completedRun.required_action) {
-        // Could implement tool output handling here using openaiClient.submitToolOutputs
-        reply = 'Additional action required. Please try again.';
-      }
+      reply = 'Additional action required. Please try again.';
+      extractedResponse = { type: 'text', content: reply };
     }
 
     // Update thread file tracking
@@ -214,19 +190,21 @@ if (DEBUG && allFileIds.length > 0) {
       await updateThreadFileTracking(currentThreadId, newFileIds, allFileIds);
     }
 
-    // Clean response content with proper web search preservation
+    // Clean response content with proper preservation
     const cleanedReply = ContentCleaningService.cleanForActiveChat(reply, {
       preserveWebSearch: webSearchEnabled,
       preserveFileLinks: true
     });
 
+    // Return response
     return NextResponse.json({
       reply: cleanedReply,
       threadId: currentThreadId,
       searchSources: webSearchPerformed ? searchSources : undefined,
       messageId: run.id,
       status: completedRun.status,
-      fileOutput: extractedResponse.files
+      fileOutput: extractedResponse.files, // Keep for backward compatibility
+      isComplete: completedRun.status === 'completed'
     });
 
   } catch (error: any) {
@@ -240,7 +218,7 @@ if (DEBUG && allFileIds.length > 0) {
 }
 
 // Helper functions
-
+//Format search enhanced message (existing function)
 function formatSearchEnhancedMessage(message: string, searchResults: any, useJsonFormat: boolean): string {
   let enhancedMessage = message;
   
@@ -269,6 +247,8 @@ function formatSearchEnhancedMessage(message: string, searchResults: any, useJso
   return enhancedMessage;
 }
 
+// MODIFIED extractTextFromMessage FUNCTION
+// UPDATED to handle both image_file and file types
 async function extractTextFromMessage(message: any): Promise<any> {
   try {
     const textContent = message.content
@@ -276,12 +256,24 @@ async function extractTextFromMessage(message: any): Promise<any> {
       .map((item: any) => item.text?.value || '')
       .join('\n');
     
+    // Extract both image_file and regular file outputs
     const files = message.content
-      .filter((item: any) => item.type === 'image_file')
-      .map((item: any) => ({
-        fileId: item.image_file?.file_id,
-        description: 'Generated file'
-      }));
+      .filter((item: any) => item.type === 'image_file' || item.type === 'file')
+      .map((item: any) => {
+        if (item.type === 'image_file' && item.image_file?.file_id) {
+          return {
+            fileId: item.image_file.file_id,
+            description: 'Generated image'
+          };
+        } else if (item.type === 'file' && item.file?.file_id) {
+          return {
+            fileId: item.file.file_id,
+            description: 'Generated file'
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
     
     return {
       type: 'text',
@@ -294,16 +286,15 @@ async function extractTextFromMessage(message: any): Promise<any> {
   }
 }
 
+//Upload file to storage (existing function)
 async function uploadFileToStorage(fileId: string, description: string, threadId: string) {
   if (!storageClient) return null;
   
   try {
-    // Get file content from OpenAI using the correct method
     const fileContent = await openaiClient.getFileContent(fileId);
     const fileBuffer = Buffer.from(fileContent);
     const filename = `${description}-${Date.now()}.docx`;
 
-    // Upload using storage client's upload method
     const result = await storageClient.upload(
       fileBuffer,
       `threads/${threadId}/${filename}`,
@@ -312,7 +303,6 @@ async function uploadFileToStorage(fileId: string, description: string, threadId
       }
     );
 
-    // Save to database
     await supabase
       .from('blob_files')
       .insert({
@@ -333,11 +323,12 @@ async function uploadFileToStorage(fileId: string, description: string, threadId
   }
 }
 
+
+//Update thread file tracking (existing function)
 async function updateThreadFileTracking(threadId: string, newFileIds: string[], allFileIds: string[]) {
   try {
     for (const fileId of newFileIds) {
       try {
-        // Get file metadata from OpenAI using the correct method
         const metadata = await openaiClient.getFile(fileId);
         
         await ThreadFileService.addFileToThread(
@@ -358,4 +349,80 @@ async function updateThreadFileTracking(threadId: string, newFileIds: string[], 
   } catch (error) {
     console.error('Error updating thread file tracking:', error);
   }
+}
+
+// Process fileOutput array and inject references into message content
+// This should be called after receiving the assistant response
+// CRITICAL NEW FUNCTION for handling generated images/graphs
+async function processFileOutputs(
+  fileOutputs: Array<{ fileId: string; description: string }>,
+  threadId: string,
+  messageContent: string
+): Promise<string> {
+  if (!fileOutputs || fileOutputs.length === 0) {
+    return messageContent;
+  }
+  
+  console.log(`Processing ${fileOutputs.length} file outputs`);
+  
+  let enhancedContent = messageContent;
+  const processedFiles: string[] = [];
+  
+  for (const fileOutput of fileOutputs) {
+    try {
+      const { fileId, description } = fileOutput;
+      
+      // Store file reference in database
+      await supabase
+        .from('blob_files')
+        .upsert({
+          openai_file_id: fileId,
+          file_id: fileId,
+          thread_id: threadId,
+          filename: `${description.replace(/\s+/g, '_')}_${Date.now()}`,
+          description: description,
+          type: 'file',
+          content_type: 'application/octet-stream',
+          file_size: 0,
+          created_at: new Date().toISOString()
+        }, {
+          onConflict: 'openai_file_id',
+          ignoreDuplicates: false
+        });
+      
+      // Create download/view URL
+      const fileUrl = `/api/files/${fileId}`;
+      
+      // Determine if it's likely an image/graph based on description
+      const imageKeywords = [
+        'graph', 'chart', 'plot', 'diagram', 
+        'image', 'visualization', 'figure',
+        'drawing', 'illustration', 'picture'
+      ];
+      
+      const isImage = imageKeywords.some(keyword => 
+        description.toLowerCase().includes(keyword)
+      );
+      
+      // Add appropriate markdown to content
+      if (isImage) {
+        enhancedContent += `\n\n![${description}](${fileUrl})`;
+        console.log(`Added image reference: ${fileUrl}`);
+      } else {
+        enhancedContent += `\n\n[Download ${description}](${fileUrl})`;
+        console.log(`Added file download link: ${fileUrl}`);
+      }
+      
+      processedFiles.push(fileId);
+      
+    } catch (error) {
+      console.error(`Error processing file output ${fileOutput.fileId}:`, error);
+    }
+  }
+  
+  if (processedFiles.length > 0) {
+    console.log(`Successfully processed ${processedFiles.length} file outputs`);
+  }
+  
+  return enhancedContent;
 }

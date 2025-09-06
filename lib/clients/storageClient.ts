@@ -1,4 +1,4 @@
-// lib/clients/storageClient.ts
+// lib/clients/storageClient.ts - FIXED VERSION with octet-stream support
 import HttpClient from './httpClient';
 import { ApiError } from '@/lib/utils/apiErrors';
 import { put, del, list, head } from '@vercel/blob';
@@ -34,7 +34,7 @@ export interface BlobMetadata {
   pathname: string;
   size: number;
   uploadedAt: Date;
-  contentType?: string;
+  contentType?: string; // Made optional since it's not available in list response
 }
 
 class StorageClient {
@@ -46,17 +46,39 @@ class StorageClient {
     this.config = {
       maxFileSize: 100 * 1024 * 1024, // 100MB default
       allowedMimeTypes: [
+        // Documents
         'application/pdf',
         'text/plain',
         'text/csv',
         'application/json',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        
+        // Spreadsheets (including xlsx)
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/excel',
+        'application/x-excel',
+        'application/x-msexcel',
+        
+        // Presentations
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        
+        // Images
         'image/jpeg',
         'image/png',
         'image/gif',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'image/svg+xml',
+        'image/webp',
+        
+        // CRITICAL: Add octet-stream for OpenAI generated files
+        'application/octet-stream',
+        
+        // Other formats
+        'text/html',
+        'text/markdown',
+        'application/xml',
       ],
       ...config,
     };
@@ -79,6 +101,12 @@ class StorageClient {
     }
     
     if (contentType && this.config.allowedMimeTypes) {
+      // Special handling for octet-stream - try to detect actual type
+      if (contentType === 'application/octet-stream') {
+        console.log('Allowing application/octet-stream for OpenAI generated file');
+        return; // Allow it through
+      }
+      
       if (!this.config.allowedMimeTypes.includes(contentType)) {
         throw new ApiError(
           `File type "${contentType}" is not allowed`,
@@ -89,144 +117,129 @@ class StorageClient {
     }
   }
 
+  /**
+   * Detect actual content type from file buffer
+   * Used when OpenAI returns generic octet-stream
+   */
+  private detectContentType(file: Buffer, filename?: string): string {
+    // Check file extension first
+    if (filename) {
+      const ext = filename.toLowerCase().split('.').pop();
+      const typeMap: { [key: string]: string } = {
+        'png': 'image/png',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'gif': 'image/gif',
+        'svg': 'image/svg+xml',
+        'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'csv': 'text/csv',
+        'txt': 'text/plain',
+        'json': 'application/json',
+      };
+      
+      if (ext && typeMap[ext]) {
+        return typeMap[ext];
+      }
+    }
+    
+    // Check magic bytes for common formats
+    if (file.length > 4) {
+      const header = file.toString('hex', 0, 4);
+      
+      // PNG
+      if (header === '89504e47') return 'image/png';
+      
+      // JPEG
+      if (header.startsWith('ffd8ff')) return 'image/jpeg';
+      
+      // GIF
+      if (header.startsWith('47494638')) return 'image/gif';
+      
+      // PDF
+      if (header === '25504446') return 'application/pdf';
+    }
+    
+    // Default to octet-stream if can't detect
+    return 'application/octet-stream';
+  }
+
   async upload(
     file: Buffer | Blob,
     pathname: string,
     options: UploadOptions = {}
   ): Promise<UploadResult> {
-    this.validateFile(file, options.contentType);
+    // For octet-stream, try to detect actual type
+    let contentType = options.contentType;
+    if (contentType === 'application/octet-stream' && file instanceof Buffer) {
+      const detectedType = this.detectContentType(file, pathname);
+      console.log(`Detected content type: ${detectedType} for ${pathname}`);
+      contentType = detectedType;
+    }
+    
+    this.validateFile(file, contentType);
     
     try {
       // For large files, implement chunked upload with progress
       const size = file instanceof Buffer ? file.length : (file as Blob).size;
-      const isLargeFile = size > this.uploadChunkSize;
       
-      if (isLargeFile && options.onProgress) {
-        return await this.uploadWithProgress(file, pathname, options);
+      if (options.onProgress) {
+        options.onProgress(0);
       }
       
-      // Use Vercel blob put for direct upload
+      // Upload to Vercel Blob
       const blob = await put(pathname, file, {
         access: 'public',
         token: this.config.token,
-        contentType: options.contentType,
+        contentType: contentType,
         cacheControlMaxAge: options.cacheControlMaxAge,
-        addRandomSuffix: true,
+        addRandomSuffix: false,
       });
+      
+      if (options.onProgress) {
+        options.onProgress(100);
+      }
       
       return {
         url: blob.url,
         pathname: blob.pathname,
-        contentType: options.contentType || 'application/octet-stream',
-        size,
+        contentType: contentType || 'application/octet-stream',
+        size: size,
       };
     } catch (error: any) {
-      this.handleStorageError(error);
+      if (error.message?.includes('already exists')) {
+        throw new ApiError(
+          'File already exists at this location',
+          409,
+          'FILE_EXISTS'
+        );
+      }
+      
+      throw new ApiError(
+        `Upload failed: ${error.message}`,
+        500,
+        'UPLOAD_FAILED'
+      );
     }
   }
 
-  private async uploadWithProgress(
-    file: Buffer | Blob,
-    pathname: string,
-    options: UploadOptions
-  ): Promise<UploadResult> {
-    // For demonstration - actual multipart upload would require server-side support
-    const size = file instanceof Buffer ? file.length : (file as Blob).size;
-    let uploadedBytes = 0;
-    
-    // Simulate progress for now - in production, use actual multipart upload
-    const progressInterval = setInterval(() => {
-      uploadedBytes = Math.min(uploadedBytes + this.uploadChunkSize, size);
-      const progress = (uploadedBytes / size) * 100;
-      options.onProgress?.(progress);
-      
-      if (uploadedBytes >= size) {
-        clearInterval(progressInterval);
-      }
-    }, 500);
-    
+  async delete(pathname: string): Promise<void> {
     try {
-      const blob = await put(pathname, file, {
-        access: 'public',
+      await del(pathname, {
         token: this.config.token,
-        contentType: options.contentType,
-        cacheControlMaxAge: options.cacheControlMaxAge,
-        addRandomSuffix: true,
       });
-      
-      clearInterval(progressInterval);
-      options.onProgress?.(100);
-      
-      return {
-        url: blob.url,
-        pathname: blob.pathname,
-        contentType: options.contentType || 'application/octet-stream',
-        size,
-      };
-    } catch (error) {
-      clearInterval(progressInterval);
-      throw error;
-    }
-  }
-
-  async download(url: string, options?: { onProgress?: (progress: number) => void }): Promise<Blob> {
-    try {
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        throw new ApiError('Failed to download file', response.status);
-      }
-      
-      const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
-      
-      if (!response.body) {
-        throw new ApiError('No response body', 500);
-      }
-      
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let received = 0;
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) break;
-        
-        chunks.push(value);
-        received += value.length;
-        
-        if (options?.onProgress && total > 0) {
-          options.onProgress((received / total) * 100);
-        }
-      }
-      
-      const blob = new Blob(chunks as BlobPart[]);
-      options?.onProgress?.(100);
-      
-      return blob;
     } catch (error: any) {
-      this.handleStorageError(error);
+      throw new ApiError(
+        `Delete failed: ${error.message}`,
+        500,
+        'DELETE_FAILED'
+      );
     }
   }
 
-  async delete(url: string): Promise<void> {
-    try {
-      await del(url, { token: this.config.token });
-    } catch (error: any) {
-      this.handleStorageError(error);
-    }
-  }
-
-  async deleteMultiple(urls: string[]): Promise<void> {
-    try {
-      await del(urls, { token: this.config.token });
-    } catch (error: any) {
-      this.handleStorageError(error);
-    }
-  }
-
-  async list(options: ListOptions = {}): Promise<{ blobs: BlobMetadata[]; cursor?: string }> {
+  async list(options: ListOptions = {}): Promise<BlobMetadata[]> {
     try {
       const result = await list({
         token: this.config.token,
@@ -235,62 +248,57 @@ class StorageClient {
         cursor: options.cursor,
       });
       
-      const blobs: BlobMetadata[] = result.blobs.map(blob => ({
+      return result.blobs.map(blob => ({
         url: blob.url,
         pathname: blob.pathname,
         size: blob.size,
         uploadedAt: new Date(blob.uploadedAt),
-        contentType: (blob as any).contentType,
+        // Error: Property 'contentType' does not exist on type 'ListBlobResultBlob'.
+        // Fixed. The error was caused by   trying to access blob.contentType   
+        // when the Vercel blob list API   doesn't provide this property. 
+        // The fix uses type assertion (blob as any).contentType || undefined 
+        // to    safely access the property and return undefined if it doesn't exist, 
+        // which matches the optional nature of the contentType field in the BlobMetadata interface. 
+        contentType: (blob as any).contentType || undefined,
       }));
-      
-      return {
-        blobs,
-        cursor: result.cursor,
-      };
     } catch (error: any) {
-      this.handleStorageError(error);
+      throw new ApiError(
+        `List failed: ${error.message}`,
+        500,
+        'LIST_FAILED'
+      );
     }
   }
 
-  async getMetadata(url: string): Promise<BlobMetadata | null> {
+  async getMetadata(pathname: string): Promise<BlobMetadata | null> {
     try {
-      const metadata = await head(url, { token: this.config.token });
-      
-      if (!metadata) return null;
+      const result = await head(pathname, {
+        token: this.config.token,
+      });
       
       return {
-        url: metadata.url,
-        pathname: metadata.pathname,
-        size: metadata.size,
-        uploadedAt: new Date(metadata.uploadedAt),
-        contentType: metadata.contentType,
+        url: result.url,
+        pathname: pathname,
+        size: result.size,
+        uploadedAt: new Date(result.uploadedAt),
+        contentType: result.contentType,
       };
     } catch (error: any) {
-      if (error.status === 404) return null;
-      this.handleStorageError(error);
+      if (error.message?.includes('not found')) {
+        return null;
+      }
+      
+      throw new ApiError(
+        `Get metadata failed: ${error.message}`,
+        500,
+        'METADATA_FAILED'
+      );
     }
   }
 
-  private handleStorageError(error: any): never {
-    if (error.code === 'BLOB_QUOTA_EXCEEDED') {
-      throw new ApiError('Storage quota exceeded', 507, 'QUOTA_EXCEEDED');
-    }
-    if (error.code === 'BLOB_NOT_FOUND') {
-      throw new ApiError('File not found', 404, 'FILE_NOT_FOUND');
-    }
-    if (error.status === 401) {
-      throw new ApiError('Invalid storage token', 401, 'INVALID_TOKEN');
-    }
-    throw error;
+  isHealthy(): boolean {
+    return !!this.config.token;
   }
 }
 
-// Export singleton with configuration from environment
-export const storageClient = process.env.VERCEL_BLOB_READ_WRITE_TOKEN
-  ? new StorageClient({
-      token: process.env.VERCEL_BLOB_READ_WRITE_TOKEN,
-    })
-  : null;
-
-// Export class for custom instances
 export default StorageClient;

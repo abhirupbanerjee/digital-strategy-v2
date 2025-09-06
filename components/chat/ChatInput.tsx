@@ -122,6 +122,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             placeholder="Type a message... (Shift+Enter for new line)"
             rows={1}
             disabled={disabled || loading}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="true"
+            name="chat-message"
+            id="chat-message-input"
           />
 
           {/* File Upload Button - Desktop only */}
